@@ -93,3 +93,58 @@ def toggle_fullscreen():
         screen = pygame.display.set_mode(WINDOWED_SIZE, flags)
     bg_scaled = scale_bg_to_fill(screen, bg_img)
 
+# ---------- Main loop ----------
+running = True
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                running = False
+            elif event.key == pygame.K_F11:
+                toggle_fullscreen()
+
+        elif event.type == pygame.VIDEORESIZE and not is_fullscreen:
+            # Only handle manual resizes in windowed mode
+            screen = pygame.display.set_mode(event.size, flags)
+            bg_scaled = scale_bg_to_fill(screen, bg_img)
+
+    # Move
+    logo_rect.x += speed[0]
+    logo_rect.y += speed[1]
+
+    bounced = False
+
+    # Edge collision (X)
+    if logo_rect.left <= 0:
+        logo_rect.left = 0
+        speed[0] = -speed[0]
+        bounced = True
+    elif logo_rect.right >= screen.get_width():
+        logo_rect.right = screen.get_width()
+        speed[0] = -speed[0]
+        bounced = True
+
+    # Edge collision (Y)
+    if logo_rect.top <= 0:
+        logo_rect.top = 0
+        speed[1] = -speed[1]
+        bounced = True
+    elif logo_rect.bottom >= screen.get_height():
+        logo_rect.bottom = screen.get_height()
+        speed[1] = -speed[1]
+        bounced = True
+
+    if bounced:
+        play_bounce()
+
+    # Draw
+    blit_bg(screen, bg_scaled)
+    screen.blit(logo_img, logo_rect)
+
+    pygame.display.flip()
+    clock.tick(FPS)
+
+pygame.quit()
