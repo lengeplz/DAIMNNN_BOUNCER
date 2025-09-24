@@ -339,27 +339,25 @@ def play_endgame_then_restart():
         restart_game_state()
         return
 
-    # Try MoviePy first (plays inside the pygame window)
+    # Try MoviePy first (plays inside the pygame window), then try imageio (ffmpeg),
+    # otherwise fall back to external player.
+    played_inside = False
+    # prefer video playback inside the pygame window
     try:
-        import moviepy.editor as mpy
-        clip = mpy.VideoFileClip(str(video_path))
-        vw, vh = clip.size
-        # Resize our window to the video's native size for playback
-        try:
-            screen = pygame.display.set_mode((vw, vh), FLAGS_WINDOWED)
-        except Exception:
-            screen = pygame.display.set_mode((vw, vh))
-        # play frames
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+        clip = VideoFileClip(str(video_path))
+        # target size is current window size so playback fills the window
+        sw, sh = screen.get_size()
         for frame in clip.iter_frames(fps=clip.fps, dtype='uint8'):
-            # frame is (h, w, 3) RGB ndarray -> swap to (w, h, 3) for surfarray
+            # frame is (h, w, 3) RGB ndarray
             try:
                 surf = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
             except Exception:
-                # fallback: convert via frombuffer
-                surf = pygame.image.frombuffer(frame.tobytes(), (vw, vh), 'RGB')
+                surf = pygame.image.frombuffer(frame.tobytes(), (frame.shape[1], frame.shape[0]), 'RGB')
+            if surf.get_size() != (sw, sh):
+                surf = pygame.transform.smoothscale(surf, (sw, sh))
             screen.blit(surf, (0, 0))
             pygame.display.flip()
-            # handle quick events so window remains responsive
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
                     pygame.quit()
@@ -368,10 +366,41 @@ def play_endgame_then_restart():
                     pygame.quit()
                     sys.exit(0)
         clip.close()
+        played_inside = True
     except Exception:
+        # try imageio reader (ffmpeg backend)
+        try:
+            import imageio
+            reader = imageio.get_reader(str(video_path))
+            sw, sh = screen.get_size()
+            for frame in reader:
+                # frame is HxWx3 RGB
+                try:
+                    surf = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
+                except Exception:
+                    surf = pygame.image.frombuffer(frame.tobytes(), (frame.shape[1], frame.shape[0]), 'RGB')
+                if surf.get_size() != (sw, sh):
+                    surf = pygame.transform.smoothscale(surf, (sw, sh))
+                screen.blit(surf, (0, 0))
+                pygame.display.flip()
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        pygame.quit()
+                        sys.exit(0)
+                    if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                        pygame.quit()
+                        sys.exit(0)
+            try:
+                reader.close()
+            except Exception:
+                pass
+            played_inside = True
+        except Exception:
+            played_inside = False
+
+    if not played_inside:
         # Fallback: open with the OS default player and wait for it to finish
         try:
-            # Use PowerShell Start-Process -Wait so we block until the player exits
             subprocess.run(["powershell", "-Command", "Start-Process", "-FilePath", str(video_path), "-Wait"], check=False)
         except Exception:
             try:
