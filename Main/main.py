@@ -21,6 +21,12 @@ except Exception as e:
     print("Warning: pygame.mixer.init() failed:", e)
     MIXER_OK = False
 
+# enable key repeat so holding arrows will continuously emit KEYDOWN events
+try:
+    pygame.key.set_repeat(200, 80)
+except Exception:
+    pass
+
 WINDOWED_SIZE = (960, 600)
 ASPECT_RATIO = WINDOWED_SIZE[0] / WINDOWED_SIZE[1]
 # Minimum allowed window size (keeps things usable and prevents extreme skinny/tall windows)
@@ -34,6 +40,12 @@ pygame.display.set_caption("Daim DVD Screensaver")
 
 clock = pygame.time.Clock()
 FPS = 60
+
+# Speed multiplier controls (user-adjustable between MIN and MAX)
+SPEED_MIN = 0.5
+SPEED_MAX = 2.0
+SPEED_STEP = 1.1  # factor applied when pressing right/left
+speed_multiplier = 1.0
 
 # ---------- Load assets ----------
 def fail(msg):
@@ -57,6 +69,15 @@ if MIXER_OK and SOUND_FILE.exists():
         bounce_sfx = pygame.mixer.Sound(str(SOUND_FILE))
     except Exception as e:
         print(f"Warning: couldn't load sound {SOUND_FILE}: {e}")
+
+# separate tap sound for speed changes
+TAP_FILE = DATA / "tap.mp3"
+tap_sfx = None
+if MIXER_OK and TAP_FILE.exists():
+    try:
+        tap_sfx = pygame.mixer.Sound(str(TAP_FILE))
+    except Exception as e:
+        print(f"Warning: couldn't load tap sound {TAP_FILE}: {e}")
 
 # ---------- Helpers ----------
 def scale_bg_to_fill(surface, bg):
@@ -97,6 +118,10 @@ def play_bounce():
     if bounce_sfx:
         bounce_sfx.play()
 
+def play_tap():
+    if tap_sfx:
+        tap_sfx.play()
+
 # ---- New helpers for time-based velocity ----
 def speed_pixels_per_second(surface):
     """Pick speed relative to window size, so visual speed feels constant."""
@@ -120,7 +145,7 @@ def make_velocity(surface, keep_dir=None):
             dx, dy = random_unit_diag()
         else:
             dx, dy = dx / mag, dy / mag
-    return dx * sps, dy * sps
+    return dx * sps * speed_multiplier, dy * sps * speed_multiplier
 
 # ---------- Prepare assets ----------
 bg_scaled = scale_bg_to_fill(screen, bg_src)
@@ -148,6 +173,13 @@ bg_scaled = scale_bg_to_fill(play_surf, bg_src)
 logo_img = fit_logo_to_window(play_surf, logo_src)
 logo_rect = logo_img.get_rect()
 logo_rect.topleft = safe_random_pos(play_surf, logo_rect)
+
+# Font for HUD
+try:
+    pygame.font.init()
+    HUD_FONT = pygame.font.Font(None, 20)
+except Exception:
+    HUD_FONT = None
 
 # Position and velocity (floats for smooth dt motion)
 pos_x = float(logo_rect.x)
@@ -206,6 +238,25 @@ while running:
                 running = False
             elif event.key == pygame.K_F11:
                 toggle_fullscreen()
+            elif event.key == pygame.K_RIGHT:
+                # increase speed by factor, capped
+                old = speed_multiplier
+                speed_multiplier = min(SPEED_MAX, speed_multiplier * SPEED_STEP)
+                if speed_multiplier != old:
+                    # scale current velocity to match new multiplier
+                    ratio = speed_multiplier / old if old != 0 else speed_multiplier
+                    vel_x *= ratio
+                    vel_y *= ratio
+                    play_tap()
+            elif event.key == pygame.K_LEFT:
+                # decrease speed by factor, capped
+                old = speed_multiplier
+                speed_multiplier = max(SPEED_MIN, speed_multiplier / SPEED_STEP)
+                if speed_multiplier != old:
+                    ratio = speed_multiplier / old if old != 0 else speed_multiplier
+                    vel_x *= ratio
+                    vel_y *= ratio
+                    play_tap()
         elif event.type == pygame.VIDEORESIZE and not is_fullscreen:
             # Constrain resize to the target aspect ratio so the playfield doesn't become too tall or skinny.
             def constrain_size_to_aspect(requested_size, prev_size):
@@ -287,6 +338,15 @@ while running:
     bg_scaled = scale_bg_to_fill(play_surf, bg_src)
     blit_bg(play_surf, bg_scaled)
     play_surf.blit(logo_img, logo_rect)
+    # HUD: show current speed multiplier
+    if HUD_FONT:
+        hud_text = f"Speed: {speed_multiplier:.2f}x"
+        surf = HUD_FONT.render(hud_text, True, (255, 255, 255))
+        # semi-transparent background for readability
+        bg = pygame.Surface((surf.get_width() + 8, surf.get_height() + 6), pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 160))
+        play_surf.blit(bg, (6, 6))
+        play_surf.blit(surf, (10, 8))
     # compute current play area position in window
     pw, ph, ox, oy = compute_play_area(screen.get_size())
     screen.blit(play_surf, (ox, oy))
