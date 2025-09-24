@@ -181,6 +181,14 @@ try:
 except Exception:
     HUD_FONT = None
 
+# HUD fade timings (seconds)
+HUD_TOTAL_DURATION = 0.5
+HUD_FADE_IN = 0.1
+HUD_VISIBLE = max(0.0, HUD_TOTAL_DURATION - HUD_FADE_IN - 0.1)  # leave some for fade out
+HUD_FADE_OUT = HUD_TOTAL_DURATION - HUD_FADE_IN - HUD_VISIBLE
+# timestamp when HUD was last triggered (seconds), or None
+hud_trigger_time = None
+
 # Position and velocity (floats for smooth dt motion)
 pos_x = float(logo_rect.x)
 pos_y = float(logo_rect.y)
@@ -248,6 +256,10 @@ while running:
                     vel_x *= ratio
                     vel_y *= ratio
                     play_tap()
+                    try:
+                        hud_trigger_time = pygame.time.get_ticks() / 1000.0
+                    except Exception:
+                        hud_trigger_time = None
             elif event.key == pygame.K_LEFT:
                 # decrease speed by factor, capped
                 old = speed_multiplier
@@ -257,6 +269,10 @@ while running:
                     vel_x *= ratio
                     vel_y *= ratio
                     play_tap()
+                    try:
+                        hud_trigger_time = pygame.time.get_ticks() / 1000.0
+                    except Exception:
+                        hud_trigger_time = None
         elif event.type == pygame.VIDEORESIZE and not is_fullscreen:
             # Constrain resize to the target aspect ratio so the playfield doesn't become too tall or skinny.
             def constrain_size_to_aspect(requested_size, prev_size):
@@ -342,11 +358,32 @@ while running:
     if HUD_FONT:
         hud_text = f"Speed: {speed_multiplier:.2f}x"
         surf = HUD_FONT.render(hud_text, True, (255, 255, 255))
-        # semi-transparent background for readability
-        bg = pygame.Surface((surf.get_width() + 8, surf.get_height() + 6), pygame.SRCALPHA)
-        bg.fill((0, 0, 0, 160))
-        play_surf.blit(bg, (6, 6))
-        play_surf.blit(surf, (10, 8))
+        alpha = 0
+        if hud_trigger_time is not None:
+            now = pygame.time.get_ticks() / 1000.0
+            t = now - hud_trigger_time
+            if t < 0:
+                alpha = 0
+            elif t < HUD_FADE_IN:
+                alpha = int(255 * (t / HUD_FADE_IN))
+            elif t < (HUD_FADE_IN + HUD_VISIBLE):
+                alpha = 255
+            elif t < (HUD_FADE_IN + HUD_VISIBLE + HUD_FADE_OUT):
+                rem = t - (HUD_FADE_IN + HUD_VISIBLE)
+                alpha = int(255 * (1.0 - (rem / HUD_FADE_OUT)))
+            else:
+                alpha = 0
+                hud_trigger_time = None
+
+        if alpha > 0:
+            # semi-transparent background for readability
+            bg = pygame.Surface((surf.get_width() + 8, surf.get_height() + 6), pygame.SRCALPHA)
+            bg.fill((0, 0, 0, int(160 * (alpha / 255.0))))
+            play_surf.blit(bg, (6, 6))
+            # apply alpha to text surface
+            text_surf = surf.copy()
+            text_surf.set_alpha(alpha)
+            play_surf.blit(text_surf, (10, 8))
     # compute current play area position in window
     pw, ph, ox, oy = compute_play_area(screen.get_size())
     screen.blit(play_surf, (ox, oy))
