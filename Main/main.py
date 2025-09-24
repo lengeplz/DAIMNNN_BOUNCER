@@ -182,9 +182,9 @@ except Exception:
     HUD_FONT = None
 
 # HUD fade timings (seconds)
-HUD_TOTAL_DURATION = 0.5
-HUD_FADE_IN = 0.1
-HUD_VISIBLE = max(0.0, HUD_TOTAL_DURATION - HUD_FADE_IN - 0.1)  # leave some for fade out
+HUD_TOTAL_DURATION = 0.7
+HUD_FADE_IN = 0.2
+HUD_VISIBLE = max(0.0, HUD_TOTAL_DURATION - HUD_FADE_IN - 0.2)  # leave some for fade out
 HUD_FADE_OUT = HUD_TOTAL_DURATION - HUD_FADE_IN - HUD_VISIBLE
 # timestamp when HUD was last triggered (seconds), or None
 hud_trigger_time = None
