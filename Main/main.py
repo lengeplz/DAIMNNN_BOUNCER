@@ -3,6 +3,13 @@ import random
 from pathlib import Path
 import math
 import pygame
+# optional fast array ops for resampling sounds
+try:
+    import numpy as np
+    NUMPY_OK = True
+except Exception:
+    np = None
+    NUMPY_OK = False
 
 # ---------- Paths ----------
 ROOT = Path(__file__).resolve().parent           # /.../main
@@ -70,6 +77,16 @@ if MIXER_OK and SOUND_FILE.exists():
     except Exception as e:
         print(f"Warning: couldn't load sound {SOUND_FILE}: {e}")
 
+# Prepare for pitch/speed-shifted bounce playback (uses resampling)
+orig_bounce_array = None
+bounce_cache = {}  # map rounded multiplier -> Sound
+
+# get mixer format info if available
+try:
+    MIXER_INFO = pygame.mixer.get_init()  # (freq, size, channels)
+except Exception:
+    MIXER_INFO = None
+
 # separate tap sound for speed changes
 TAP_FILE = DATA / "tap.mp3"
 tap_sfx = None
@@ -115,8 +132,64 @@ def safe_random_pos(surface, rect):
     return random.randint(0, x_max), random.randint(0, y_max)
 
 def play_bounce():
-    if bounce_sfx:
-        bounce_sfx.play()
+    # Play bounce sound; when NumPy is available, resample to match speed_multiplier
+    if not bounce_sfx:
+        return
+    if NUMPY_OK and bounce_sfx is not None:
+        key = round(speed_multiplier, 2)
+        s = bounce_cache.get(key)
+        if s:
+            s.play()
+            return
+        # lazily load original array
+        global orig_bounce_array
+        try:
+            if orig_bounce_array is None:
+                orig_bounce_array = pygame.sndarray.array(bounce_sfx)
+        except Exception:
+            # fallback
+            try:
+                bounce_sfx.play()
+            except Exception:
+                pass
+            return
+
+        try:
+            arr = orig_bounce_array
+            # arr may be int16 or similar; convert to float for interpolation
+            orig_len = arr.shape[0]
+            if speed_multiplier == 1.0 or orig_len < 2:
+                bounce_cache[key] = bounce_sfx
+                bounce_sfx.play()
+                return
+            new_len = max(1, int(round(orig_len / float(speed_multiplier))))
+            # generate indices in original sample space
+            orig_idx = np.arange(orig_len)
+            new_idx = np.linspace(0, orig_len - 1, new_len)
+            if arr.ndim == 1:
+                resampled = np.interp(new_idx, orig_idx, arr.astype(np.float32)).astype(arr.dtype)
+            else:
+                # stereo or multi-channel
+                chans = arr.shape[1]
+                resampled = np.zeros((new_len, chans), dtype=arr.dtype)
+                for c in range(chans):
+                    resampled[:, c] = np.interp(new_idx, orig_idx, arr[:, c].astype(np.float32)).astype(arr.dtype)
+            new_sound = pygame.sndarray.make_sound(resampled)
+            bounce_cache[key] = new_sound
+            new_sound.play()
+            return
+        except Exception:
+            # any error -> fallback to normal playback
+            try:
+                bounce_sfx.play()
+            except Exception:
+                pass
+            return
+    else:
+        try:
+            bounce_sfx.play()
+        except Exception:
+            pass
 
 def play_tap():
     if tap_sfx:
