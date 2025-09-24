@@ -124,14 +124,36 @@ def make_velocity(surface, keep_dir=None):
 
 # ---------- Prepare assets ----------
 bg_scaled = scale_bg_to_fill(screen, bg_src)
-logo_img = fit_logo_to_window(screen, logo_src)
+
+# We'll render the game into a centered play surface that preserves the ASPECT_RATIO.
+def compute_play_area(screen_size):
+    sw, sh = screen_size
+    # Fit the largest play area with desired aspect ratio inside the screen
+    if sw / sh >= ASPECT_RATIO:
+        # window is wider than target -> full height, limited width
+        ph = max(1, sh)
+        pw = max(1, int(round(ph * ASPECT_RATIO)))
+    else:
+        # window is taller than target -> full width, limited height
+        pw = max(1, sw)
+        ph = max(1, int(round(pw / ASPECT_RATIO)))
+    ox = (sw - pw) // 2
+    oy = (sh - ph) // 2
+    return pw, ph, ox, oy
+
+# create initial play surface and fit logo inside it
+pw, ph, ox, oy = compute_play_area(screen.get_size())
+play_surf = pygame.Surface((pw, ph))
+bg_scaled = scale_bg_to_fill(play_surf, bg_src)
+logo_img = fit_logo_to_window(play_surf, logo_src)
 logo_rect = logo_img.get_rect()
-logo_rect.topleft = safe_random_pos(screen, logo_rect)
+logo_rect.topleft = safe_random_pos(play_surf, logo_rect)
 
 # Position and velocity (floats for smooth dt motion)
 pos_x = float(logo_rect.x)
 pos_y = float(logo_rect.y)
-vel_x, vel_y = make_velocity(screen)
+# velocities are in pixels/sec relative to play area size
+vel_x, vel_y = make_velocity(play_surf)
 
 is_fullscreen = False
 
@@ -150,17 +172,19 @@ def toggle_fullscreen():
         # restore previous windowed size (keeps aspect)
         screen = pygame.display.set_mode(last_windowed_size, FLAGS_WINDOWED)
         prev_window_size = last_windowed_size
-    bg_scaled = scale_bg_to_fill(screen, bg_src)
-    logo_img_new = fit_logo_to_window(screen, logo_src)
+    # Recompute play surface and assets based on the current window size.
+    pw, ph, ox, oy = compute_play_area(screen.get_size())
+    global play_surf
+    play_surf = pygame.Surface((pw, ph))
+    bg_scaled = scale_bg_to_fill(play_surf, bg_src)
+    logo_img_new = fit_logo_to_window(play_surf, logo_src)
     center = logo_rect.center
     logo_rect.size = logo_img_new.get_size()
     logo_img = logo_img_new
-    logo_rect.center = center
-    sw, sh = screen.get_size()
-    logo_rect.left = max(0, min(logo_rect.left, sw - logo_rect.width))
-    logo_rect.top = max(0, min(logo_rect.top, sh - logo_rect.height))
+    # Keep center within new play area bounds
+    logo_rect.center = (max(0, min(center[0], pw)), max(0, min(center[1], ph)))
     pos_x, pos_y = float(logo_rect.x), float(logo_rect.y)
-    vel_x, vel_y = make_velocity(screen, keep_dir=(vel_x, vel_y))
+    vel_x, vel_y = make_velocity(play_surf, keep_dir=(vel_x, vel_y))
 
     # update prev_window_size in case fullscreen toggled back to windowed
     try:
@@ -201,37 +225,44 @@ while running:
                     w = max(min_w, int(round(h * ASPECT_RATIO)))
                 return (w, h)
 
-            new_size = constrain_size_to_aspect((event.w, event.h), prev_window_size)
+            # When the user resizes (including clicking the maximize button), we let
+            # the OS-set window size be the real `screen` size, but we compute a
+            # centered play area that preserves the aspect ratio and draw black
+            # bars around it. This keeps the gameplay area stable while visually
+            # filling the screen with black letter/pillar boxes.
+            new_size = (event.w, event.h)
             screen = pygame.display.set_mode(new_size, FLAGS_WINDOWED)
             prev_window_size = new_size
             last_windowed_size = new_size
-            bg_scaled = scale_bg_to_fill(screen, bg_src)
+            pw, ph, ox, oy = compute_play_area(screen.get_size())
+            play_surf = pygame.Surface((pw, ph))
+            bg_scaled = scale_bg_to_fill(play_surf, bg_src)
             old_center = logo_rect.center
-            logo_img = fit_logo_to_window(screen, logo_src)
+            logo_img = fit_logo_to_window(play_surf, logo_src)
             logo_rect.size = logo_img.get_size()
-            logo_rect.center = old_center
+            # clamp center inside play area
+            logo_rect.center = (max(0, min(old_center[0], pw)), max(0, min(old_center[1], ph)))
             sw, sh = screen.get_size()
-            logo_rect.left = max(0, min(logo_rect.left, sw - logo_rect.width))
-            logo_rect.top = max(0, min(logo_rect.top, sh - logo_rect.height))
             pos_x, pos_y = float(logo_rect.x), float(logo_rect.y)
-            vel_x, vel_y = make_velocity(screen, keep_dir=(vel_x, vel_y))
+            vel_x, vel_y = make_velocity(play_surf, keep_dir=(vel_x, vel_y))
 
-    # --- Move using dt-based velocity ---
+    # --- Move using dt-based velocity inside play surface coordinates ---
     pos_x += vel_x * dt
     pos_y += vel_y * dt
     logo_rect.x = int(pos_x)
     logo_rect.y = int(pos_y)
 
     bounced = False
-    sw, sh = screen.get_size()
+    # collisions use play surface size (pw, ph)
+    pw, ph = play_surf.get_size()
 
     if logo_rect.left <= 0:
         logo_rect.left = 0
         pos_x = float(logo_rect.x)
         vel_x = -vel_x
         bounced = True
-    elif logo_rect.right >= sw:
-        logo_rect.right = sw
+    elif logo_rect.right >= pw:
+        logo_rect.right = pw
         pos_x = float(logo_rect.x)
         vel_x = -vel_x
         bounced = True
@@ -241,8 +272,8 @@ while running:
         pos_y = float(logo_rect.y)
         vel_y = -vel_y
         bounced = True
-    elif logo_rect.bottom >= sh:
-        logo_rect.bottom = sh
+    elif logo_rect.bottom >= ph:
+        logo_rect.bottom = ph
         pos_y = float(logo_rect.y)
         vel_y = -vel_y
         bounced = True
@@ -250,9 +281,15 @@ while running:
     if bounced:
         play_bounce()
 
-    # Draw
-    blit_bg(screen, bg_scaled)
-    screen.blit(logo_img, logo_rect)
+    # Draw: clear screen to black, draw play_surf centered and scaled to play area
+    screen.fill((0, 0, 0))
+    # draw background into play surface and then blit logo
+    bg_scaled = scale_bg_to_fill(play_surf, bg_src)
+    blit_bg(play_surf, bg_scaled)
+    play_surf.blit(logo_img, logo_rect)
+    # compute current play area position in window
+    pw, ph, ox, oy = compute_play_area(screen.get_size())
+    screen.blit(play_surf, (ox, oy))
     pygame.display.flip()
 
 pygame.quit()
