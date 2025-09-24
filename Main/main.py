@@ -22,7 +22,13 @@ except Exception as e:
     MIXER_OK = False
 
 WINDOWED_SIZE = (960, 600)
+ASPECT_RATIO = WINDOWED_SIZE[0] / WINDOWED_SIZE[1]
+# Minimum allowed window size (keeps things usable and prevents extreme skinny/tall windows)
+MIN_WINDOW_SIZE = (480, 300)
 FLAGS_WINDOWED = pygame.RESIZABLE | pygame.DOUBLEBUF
+# track last good windowed size so we can restore after fullscreen
+last_windowed_size = WINDOWED_SIZE
+prev_window_size = WINDOWED_SIZE
 screen = pygame.display.set_mode(WINDOWED_SIZE, FLAGS_WINDOWED)
 pygame.display.set_caption("Daim DVD Screensaver")
 
@@ -131,11 +137,19 @@ is_fullscreen = False
 
 def toggle_fullscreen():
     global is_fullscreen, screen, bg_scaled, logo_img, logo_rect, vel_x, vel_y, pos_x, pos_y
+    global last_windowed_size, prev_window_size
     is_fullscreen = not is_fullscreen
     if is_fullscreen:
+        # remember the last windowed size before entering fullscreen
+        try:
+            last_windowed_size = prev_window_size
+        except Exception:
+            last_windowed_size = WINDOWED_SIZE
         screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN | pygame.DOUBLEBUF)
     else:
-        screen = pygame.display.set_mode(WINDOWED_SIZE, FLAGS_WINDOWED)
+        # restore previous windowed size (keeps aspect)
+        screen = pygame.display.set_mode(last_windowed_size, FLAGS_WINDOWED)
+        prev_window_size = last_windowed_size
     bg_scaled = scale_bg_to_fill(screen, bg_src)
     logo_img_new = fit_logo_to_window(screen, logo_src)
     center = logo_rect.center
@@ -147,6 +161,12 @@ def toggle_fullscreen():
     logo_rect.top = max(0, min(logo_rect.top, sh - logo_rect.height))
     pos_x, pos_y = float(logo_rect.x), float(logo_rect.y)
     vel_x, vel_y = make_velocity(screen, keep_dir=(vel_x, vel_y))
+
+    # update prev_window_size in case fullscreen toggled back to windowed
+    try:
+        prev_window_size = screen.get_size()
+    except Exception:
+        prev_window_size = last_windowed_size
 
 # ---------- Main loop ----------
 running = True
@@ -163,7 +183,28 @@ while running:
             elif event.key == pygame.K_F11:
                 toggle_fullscreen()
         elif event.type == pygame.VIDEORESIZE and not is_fullscreen:
-            screen = pygame.display.set_mode(event.size, FLAGS_WINDOWED)
+            # Constrain resize to the target aspect ratio so the playfield doesn't become too tall or skinny.
+            def constrain_size_to_aspect(requested_size, prev_size):
+                req_w, req_h = requested_size
+                prev_w, prev_h = prev_size
+                min_w, min_h = MIN_WINDOW_SIZE
+                req_w = max(req_w, min_w)
+                req_h = max(req_h, min_h)
+                # Choose which dimension the user is primarily changing
+                if abs(req_w - prev_w) >= abs(req_h - prev_h):
+                    # width-driven change
+                    w = req_w
+                    h = max(min_h, int(round(w / ASPECT_RATIO)))
+                else:
+                    # height-driven change
+                    h = req_h
+                    w = max(min_w, int(round(h * ASPECT_RATIO)))
+                return (w, h)
+
+            new_size = constrain_size_to_aspect((event.w, event.h), prev_window_size)
+            screen = pygame.display.set_mode(new_size, FLAGS_WINDOWED)
+            prev_window_size = new_size
+            last_windowed_size = new_size
             bg_scaled = scale_bg_to_fill(screen, bg_src)
             old_center = logo_rect.center
             logo_img = fit_logo_to_window(screen, logo_src)
