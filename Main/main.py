@@ -262,6 +262,13 @@ HUD_FADE_OUT = HUD_TOTAL_DURATION - HUD_FADE_IN - HUD_VISIBLE
 # timestamp when HUD was last triggered (seconds), or None
 hud_trigger_time = None
 
+# Approach-to-center settings (when hitting the corner)
+APPROACH_TIME = 0.5  # seconds to glide back to center
+approach_active = False
+approach_time_left = 0.0
+approach_vx = 0.0
+approach_vy = 0.0
+
 # Position and velocity (floats for smooth dt motion)
 pos_x = float(logo_rect.x)
 pos_y = float(logo_rect.y)
@@ -387,39 +394,79 @@ while running:
             vel_x, vel_y = make_velocity(play_surf, keep_dir=(vel_x, vel_y))
 
     # --- Move using dt-based velocity inside play surface coordinates ---
-    pos_x += vel_x * dt
-    pos_y += vel_y * dt
-    logo_rect.x = int(pos_x)
-    logo_rect.y = int(pos_y)
-
-    bounced = False
-    # collisions use play surface size (pw, ph)
     pw, ph = play_surf.get_size()
 
-    if logo_rect.left <= 0:
-        logo_rect.left = 0
-        pos_x = float(logo_rect.x)
-        vel_x = -vel_x
-        bounced = True
-    elif logo_rect.right >= pw:
-        logo_rect.right = pw
-        pos_x = float(logo_rect.x)
-        vel_x = -vel_x
-        bounced = True
+    if approach_active:
+        # glide toward center using approach_vx/approach_vy
+        pos_x += approach_vx * dt
+        pos_y += approach_vy * dt
+        approach_time_left -= dt
+        logo_rect.x = int(pos_x)
+        logo_rect.y = int(pos_y)
+        if approach_time_left <= 0:
+            # snap to exact center and stop
+            logo_rect.center = (pw // 2, ph // 2)
+            pos_x = float(logo_rect.x)
+            pos_y = float(logo_rect.y)
+            vel_x = 0.0
+            vel_y = 0.0
+            approach_active = False
+    else:
+        pos_x += vel_x * dt
+        pos_y += vel_y * dt
+        logo_rect.x = int(pos_x)
+        logo_rect.y = int(pos_y)
 
-    if logo_rect.top <= 0:
-        logo_rect.top = 0
-        pos_y = float(logo_rect.y)
-        vel_y = -vel_y
-        bounced = True
-    elif logo_rect.bottom >= ph:
-        logo_rect.bottom = ph
-        pos_y = float(logo_rect.y)
-        vel_y = -vel_y
-        bounced = True
+        bounced_x = False
+        bounced_y = False
 
-    if bounced:
-        play_bounce()
+        if logo_rect.left <= 0:
+            logo_rect.left = 0
+            pos_x = float(logo_rect.x)
+            vel_x = -vel_x
+            bounced_x = True
+        elif logo_rect.right >= pw:
+            logo_rect.right = pw
+            pos_x = float(logo_rect.x)
+            vel_x = -vel_x
+            bounced_x = True
+
+        if logo_rect.top <= 0:
+            logo_rect.top = 0
+            pos_y = float(logo_rect.y)
+            vel_y = -vel_y
+            bounced_y = True
+        elif logo_rect.bottom >= ph:
+            logo_rect.bottom = ph
+            pos_y = float(logo_rect.y)
+            vel_y = -vel_y
+            bounced_y = True
+
+        # Determine a small threshold (pixels) to consider "near" the corner
+        corner_threshold = max(8, int(round(min(pw, ph) * 0.03)))
+        near_x = (logo_rect.left <= corner_threshold) or ((pw - logo_rect.right) <= corner_threshold)
+        near_y = (logo_rect.top <= corner_threshold) or ((ph - logo_rect.bottom) <= corner_threshold)
+
+        # If both axes bounced in the same frame (corner "sweet spot"), or we're near both edges,
+        # start approach-to-center
+        if (bounced_x and bounced_y) or (near_x and near_y):
+            cx, cy = pw // 2, ph // 2
+            cur_cx, cur_cy = logo_rect.center
+            dx = cx - cur_cx
+            dy = cy - cur_cy
+            approach_active = True
+            approach_time_left = APPROACH_TIME
+            approach_vx = dx / APPROACH_TIME
+            approach_vy = dy / APPROACH_TIME
+            vel_x = approach_vx
+            vel_y = approach_vy
+            # don't play bounce sound for corner hit; it's handled by movement end
+            bounced = False
+        else:
+            bounced = bounced_x or bounced_y
+
+        if bounced:
+            play_bounce()
 
     # Draw: clear screen to black, draw play_surf centered and scaled to play area
     screen.fill((0, 0, 0))
