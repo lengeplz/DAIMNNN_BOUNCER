@@ -2,6 +2,8 @@ import sys
 import random
 from pathlib import Path
 import math
+import os
+import subprocess
 import pygame
 # optional fast array ops for resampling sounds
 try:
@@ -263,11 +265,16 @@ HUD_FADE_OUT = HUD_TOTAL_DURATION - HUD_FADE_IN - HUD_VISIBLE
 hud_trigger_time = None
 
 # Approach-to-center settings (when hitting the corner)
-APPROACH_TIME = 0.5  # seconds to glide back to center
+APPROACH_TIME = 0.8  # seconds to glide back to center (use easing)
 approach_active = False
-approach_time_left = 0.0
-approach_vx = 0.0
-approach_vy = 0.0
+# approach easing state
+approach_elapsed = 0.0
+approach_start_x = 0.0
+approach_start_y = 0.0
+approach_target_x = 0.0
+approach_target_y = 0.0
+# how close (fraction of play area) to the corner counts as "near" for forced approach
+NEAR_PERCENT = 0.01  # 1% of width/height
 
 # Position and velocity (floats for smooth dt motion)
 pos_x = float(logo_rect.x)
@@ -311,6 +318,93 @@ def toggle_fullscreen():
         prev_window_size = screen.get_size()
     except Exception:
         prev_window_size = last_windowed_size
+
+def ease_out_cubic(t: float) -> float:
+    """Simple ease-out cubic for smoother glide (t in [0,1])."""
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    return 1.0 - pow(1.0 - t, 3)
+
+def play_endgame_then_restart():
+    """Attempt to play `data/endgame.mp4` (MoviePy preferred). After the video
+    finishes, restore the game window and reset the logo state to restart the
+    screensaver."""
+    global screen, play_surf, bg_scaled, logo_img, logo_rect
+    global pos_x, pos_y, vel_x, vel_y, last_windowed_size, prev_window_size
+    video_path = DATA / "endgame.mp4"
+    if not video_path.exists():
+        # nothing to play; just restart
+        restart_game_state()
+        return
+
+    # Try MoviePy first (plays inside the pygame window)
+    try:
+        import moviepy.editor as mpy
+        clip = mpy.VideoFileClip(str(video_path))
+        vw, vh = clip.size
+        # Resize our window to the video's native size for playback
+        try:
+            screen = pygame.display.set_mode((vw, vh), FLAGS_WINDOWED)
+        except Exception:
+            screen = pygame.display.set_mode((vw, vh))
+        # play frames
+        for frame in clip.iter_frames(fps=clip.fps, dtype='uint8'):
+            # frame is (h, w, 3) RGB ndarray -> swap to (w, h, 3) for surfarray
+            try:
+                surf = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
+            except Exception:
+                # fallback: convert via frombuffer
+                surf = pygame.image.frombuffer(frame.tobytes(), (vw, vh), 'RGB')
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            # handle quick events so window remains responsive
+            for ev in pygame.event.get():
+                if ev.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit(0)
+                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                    pygame.quit()
+                    sys.exit(0)
+        clip.close()
+    except Exception:
+        # Fallback: open with the OS default player and wait for it to finish
+        try:
+            # Use PowerShell Start-Process -Wait so we block until the player exits
+            subprocess.run(["powershell", "-Command", "Start-Process", "-FilePath", str(video_path), "-Wait"], check=False)
+        except Exception:
+            try:
+                os.startfile(str(video_path))
+            except Exception:
+                # cannot play; just continue
+                pass
+
+    # After playback restore previous windowed size and restart the game
+    try:
+        screen = pygame.display.set_mode(last_windowed_size, FLAGS_WINDOWED)
+    except Exception:
+        screen = pygame.display.set_mode(last_windowed_size)
+    prev_window_size = last_windowed_size
+    # recompute play surface and restart
+    restart_game_state()
+
+def restart_game_state():
+    """Reset logo, play surface and motion to restart the screensaver loop."""
+    global play_surf, bg_scaled, logo_img, logo_rect
+    global pos_x, pos_y, vel_x, vel_y
+    global approach_active, approach_elapsed
+    pw, ph, ox, oy = compute_play_area(screen.get_size())
+    play_surf = pygame.Surface((pw, ph))
+    bg_scaled = scale_bg_to_fill(play_surf, bg_src)
+    logo_img = fit_logo_to_window(play_surf, logo_src)
+    logo_rect.size = logo_img.get_size()
+    logo_rect.topleft = safe_random_pos(play_surf, logo_rect)
+    pos_x = float(logo_rect.x)
+    pos_y = float(logo_rect.y)
+    vel_x, vel_y = make_velocity(play_surf)
+    approach_active = False
+    approach_elapsed = 0.0
 
 # ---------- Main loop ----------
 running = True
@@ -397,20 +491,30 @@ while running:
     pw, ph = play_surf.get_size()
 
     if approach_active:
-        # glide toward center using approach_vx/approach_vy
-        pos_x += approach_vx * dt
-        pos_y += approach_vy * dt
-        approach_time_left -= dt
-        logo_rect.x = int(pos_x)
-        logo_rect.y = int(pos_y)
-        if approach_time_left <= 0:
-            # snap to exact center and stop
+        # Eased interpolation from start to target over APPROACH_TIME
+        approach_elapsed += dt
+        t = min(1.0, approach_elapsed / APPROACH_TIME)
+        e = ease_out_cubic(t)
+        nx = approach_start_x + (approach_target_x - approach_start_x) * e
+        ny = approach_start_y + (approach_target_y - approach_start_y) * e
+        logo_rect.x = int(nx)
+        logo_rect.y = int(ny)
+        pos_x = float(logo_rect.x)
+        pos_y = float(logo_rect.y)
+        if t >= 1.0:
+            # reached center
             logo_rect.center = (pw // 2, ph // 2)
             pos_x = float(logo_rect.x)
             pos_y = float(logo_rect.y)
             vel_x = 0.0
             vel_y = 0.0
             approach_active = False
+            # Play endgame video and restart when done
+            try:
+                play_endgame_then_restart()
+            except Exception:
+                # ensure we still restart even if video playback fails
+                restart_game_state()
     else:
         pos_x += vel_x * dt
         pos_y += vel_y * dt
@@ -442,24 +546,25 @@ while running:
             vel_y = -vel_y
             bounced_y = True
 
-        # Determine a small threshold (pixels) to consider "near" the corner
-        corner_threshold = max(8, int(round(min(pw, ph) * 0.03)))
-        near_x = (logo_rect.left <= corner_threshold) or ((pw - logo_rect.right) <= corner_threshold)
-        near_y = (logo_rect.top <= corner_threshold) or ((ph - logo_rect.bottom) <= corner_threshold)
-
-        # If both axes bounced in the same frame (corner "sweet spot"), or we're near both edges,
-        # start approach-to-center
+        # If both axes bounced in the same frame (corner "sweet spot"), or we're very close
+        # to a corner (within NEAR_PERCENT of both axes), start approach-to-center.
+        # This is strict (1%) so it doesn't trigger too often.
+        pw_f = float(pw)
+        ph_f = float(ph)
+        near_x = (logo_rect.left <= pw_f * NEAR_PERCENT) or ((pw_f - logo_rect.right) <= pw_f * NEAR_PERCENT)
+        near_y = (logo_rect.top <= ph_f * NEAR_PERCENT) or ((ph_f - logo_rect.bottom) <= ph_f * NEAR_PERCENT)
         if (bounced_x and bounced_y) or (near_x and near_y):
             cx, cy = pw // 2, ph // 2
-            cur_cx, cur_cy = logo_rect.center
-            dx = cx - cur_cx
-            dy = cy - cur_cy
+            # initialize eased approach
             approach_active = True
-            approach_time_left = APPROACH_TIME
-            approach_vx = dx / APPROACH_TIME
-            approach_vy = dy / APPROACH_TIME
-            vel_x = approach_vx
-            vel_y = approach_vy
+            approach_elapsed = 0.0
+            approach_start_x = float(logo_rect.x)
+            approach_start_y = float(logo_rect.y)
+            approach_target_x = float(cx - (logo_rect.width // 2))
+            approach_target_y = float(cy - (logo_rect.height // 2))
+            # keep velocities zeroed while we approach
+            vel_x = 0.0
+            vel_y = 0.0
             # don't play bounce sound for corner hit; it's handled by movement end
             bounced = False
         else:
